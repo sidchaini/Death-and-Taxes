@@ -697,6 +697,8 @@ def download_all_wiserep_data(
     results = {}
     consecutive_empty_pages = 0
     MAX_CONSECUTIVE_EMPTY = 5
+    unique_objects = set()
+    target_nobjects = args.nobjects if args.nobjects else None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
         current_page = start_page
@@ -733,6 +735,27 @@ def download_all_wiserep_data(
                         results[page] = success
                         pbar.update(1)
 
+                        if success and target_nobjects:
+                            # Check if we've reached the target number of objects
+                            csv_file = datadir / f"wiserep_spectra_page{page}.csv"
+                            if csv_file.exists():
+                                try:
+                                    df = pd.read_csv(csv_file)
+                                    obj_col = "Unnamed: 0" if "Unnamed: 0" in df.columns else "Obj. ID"
+                                    if obj_col in df.columns:
+                                        unique_objects.update(df[obj_col].unique())
+                                        if len(unique_objects) >= target_nobjects:
+                                            logger.info(
+                                                f"Reached target of {target_nobjects} unique objects ({len(unique_objects)} found). Stopping."
+                                            )
+                                            # Cancel remaining futures
+                                            for f in futures:
+                                                f.cancel()
+                                            end_page = 0  # Break outer loop
+                                            break
+                                except Exception as e:
+                                    logger.warning(f"Error reading CSV for object count: {e}")
+
                         if not success:
                             # Check for consecutive failures
                             last_pages = sorted(results.keys())[-MAX_CONSECUTIVE_EMPTY:]
@@ -754,6 +777,8 @@ def download_all_wiserep_data(
 
     successful_pages = sum(1 for success in results.values() if success)
     logger.info(f"Download complete. Successfully processed {successful_pages} pages.")
+    if target_nobjects:
+        logger.info(f"Downloaded data for {len(unique_objects)} unique objects (target: {target_nobjects}).")
 
 
 def verify_and_combine_data(
@@ -849,6 +874,9 @@ Examples:
 
 3. Download high-quality spectra from the ZTF source group:
    python wiserep_downloader.py --quality High --source_groups ZTF
+
+4. Download spectra for the 30 most recent SN Ia objects from P60/SEDM:
+   python wiserep_downloader.py --obj_type "SN Ia" --instruments "P60 / SEDM" --nobjects 30
 """,
     )
 
@@ -886,6 +914,12 @@ Examples:
         type=int,
         default=10,
         help="Number of concurrent download threads (default: 10).",
+    )
+    control_group.add_argument(
+        "--nobjects",
+        type=int,
+        default=None,
+        help="Maximum number of unique objects to download (e.g., 30). Download stops once this limit is reached.",
     )
     control_group.add_argument(
         "--combine-only",
